@@ -1,1 +1,459 @@
-jbhb
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+
+// Initialize Wifi connection to the router
+char ssid[] = "EsmsE";     // your network SSID (name)
+char password[] = "esmse123"; // your network key
+
+//THINGSBOARD
+#include "ThingsBoard.h"
+#define TOKEN "GDB51Nov99cS9ajiFGdq"
+#define THINGSBOARD_SERVER "demo.thingsboard.io"
+WiFiClient espClient;
+ThingsBoard tb(espClient);
+int status = WL_IDLE_STATUS;
+
+
+String kirim;
+String kondisi_kolam;
+
+//TURBIDITY
+double turbidity;
+const int turb = 35;
+
+//ULTRASONIK
+#include <HCSR04.h>
+UltraSonicDistanceSensor distanceSensor(26, 27);
+double jarak;
+
+//AIR
+const int sens_air = 32;
+String status_air;
+int nilai_air;
+
+//OUTPUT
+const int sole = 14;
+const int pump = 12;
+
+//SERVO
+#include <ESP32Servo.h>
+const int pot = 33;
+Servo myservo;
+
+// Initialize Telegram BOT
+#define BOTtoken "957503623:AAFhYpXRfCisUTZc2_DYwQRyDwDHm79dXsE"  // your Bot Token (Get from Botfather)
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+
+int Bot_mtbs = 1000; //mean time between scan messages
+long Bot_lasttime;   //last time messages' scan has been done
+bool Start = false;
+
+void ultra_fnc() {
+  //ULTRASONIK
+  Serial.print("Jarak Air : ");
+  jarak = distanceSensor.measureDistanceCm();
+  Serial.println(jarak);
+  delay(500);
+}
+
+void turb_fnc() {
+  //  TURBIDITY
+  turbidity = analogRead(turb) / 1024.0 * 5.0;
+  Serial.print("Trubidity value: ");
+  Serial.println(turbidity);
+}
+
+void status_air_fnc() {
+  //AIR
+  Serial.print("Air : ");
+  nilai_air = analogRead(sens_air);
+  Serial.print(nilai_air);
+  if (nilai_air > 1500) {
+    nilai_air = 1;
+    status_air = " Tersedia ";
+    Serial.print(status_air);
+  } else {
+    nilai_air = 0;
+    status_air = " Kosong ";
+    Serial.print(status_air);
+  }
+  Serial.print(nilai_air);
+  Serial.println();
+}
+
+void sole_tune(){
+  digitalWrite(sole, HIGH);
+  delay(500);
+  digitalWrite(sole, LOW);
+  delay(500);
+}
+
+void logika_kolam() {
+  if ((analogRead(turb) / 4095.0 * 20.0) < 13) {
+    if (analogRead(sens_air) > 1500) {
+      Serial.println("Kolam Kotor");
+      kirim = "";
+      kirim = "Kolam saat ini dalam keadaan kotor\n";
+      kirim += "Apakah anda ingin menguras kolam?\n";
+      kirim += "/ya || /tidak\n";
+      bot.sendMessage("696919753", kirim);
+      telegram2();
+      delay(3000);
+    }
+  } else {
+    digitalWrite(sole, LOW);
+    if (analogRead(sens_air) < 1500) {
+      digitalWrite(pump, HIGH);
+      Serial.println("Kolam Di Isi");
+
+      delay(1000);
+
+      kirim = "";
+      kirim = "Kolam saat ini di isi";
+      bot.sendMessage("696919753", kirim);
+
+      while (analogRead(sens_air) < 1500) {
+        Serial.print(".");
+        delay(1000);
+      } 
+    } else if (analogRead(sens_air) > 1500 && (distanceSensor.measureDistanceCm() >= 10 || distanceSensor.measureDistanceCm() == -1)) {
+      digitalWrite(pump, HIGH);
+      Serial.println("Kolam Di Isi dan Mengukur Jarak");
+      while (distanceSensor.measureDistanceCm() > 10) {
+        Serial.print(".");
+        delay(1000);
+      }
+    } else if (analogRead(sens_air) > 1500 && distanceSensor.measureDistanceCm() < 10) {
+      digitalWrite(pump, LOW);
+      Serial.println("Kolam Penuh");
+
+      delay(1000);
+
+      kondisi_kolam = "Kolam Penuh";
+
+      char copy[20];
+
+      kondisi_kolam.toCharArray(copy, 20);
+
+      send_data();
+      tb.sendTelemetryString("kondisi_kolam", copy);
+
+      kirim = "";
+      kirim = "Kolam sudah penuh\n\n";
+      kirim += "Saat ini anda bisa melakukan request\n";
+      kirim += "Klik /menu untuk menampilkan menu yang ada";
+      bot.sendMessage("696919753", kirim);
+
+      while ((analogRead(turb) / 4095.0 * 20.0) > 13) {
+        telegram();
+        delay(1000);
+      }
+    }
+  }
+}
+
+void send_data() {
+  if (!tb.connected()) {
+    // Connect to the ThingsBoard
+    Serial.print("Connecting to: ");
+    Serial.print(THINGSBOARD_SERVER);
+    Serial.print(" with token ");
+    Serial.println(TOKEN);
+    if (!tb.connect(THINGSBOARD_SERVER, TOKEN)) {
+      Serial.println("Failed to connect");
+      return;
+    }
+  }
+}
+
+void telegram() {
+  if (millis() > Bot_lasttime + Bot_mtbs)  {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+    while (numNewMessages) {
+      Serial.println("got response");
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+
+    Bot_lasttime = millis();
+  }
+}
+
+void telegram2() {
+  if (millis() > Bot_lasttime + Bot_mtbs)  {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+    while (numNewMessages) {
+      Serial.println("got response");
+      handleNewMessages2(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+
+    Bot_lasttime = millis();
+  }
+}
+
+void handleNewMessages(int numNewMessages) {
+  Serial.println("handleNewMessages");
+  Serial.println(String(numNewMessages));
+
+  for (int i = 0; i < numNewMessages; i++) {
+    String chat_id = String(bot.messages[i].chat_id);
+    String text = bot.messages[i].text;
+
+    String from_name = bot.messages[i].from_name;
+    if (from_name == "") from_name = "Guest";
+
+    if (text == "/jarak_air") {
+      kirim = "";
+
+      Serial.println();
+      bot.sendChatAction(chat_id, "typing");
+      ultra_fnc();
+      delay(200);
+
+      kirim = "Jarak dengan air : ";
+      kirim += String(jarak);
+      bot.sendMessage(chat_id, kirim);
+
+      send_data();
+
+      Serial.println("Sending Data...");
+      Serial.print("Jarak Permukaan Air :  "); Serial.println(jarak);
+      tb.sendTelemetryFloat("jarak", jarak);
+      tb.loop();
+    }
+
+    if (text == "/status_air") {
+      kirim = "";
+
+      Serial.println();
+      bot.sendChatAction(chat_id, "typing");
+      status_air_fnc();
+      delay(200);
+
+      kirim = "Kondisi air kolam : ";
+      kirim += status_air;
+      bot.sendMessage(chat_id, kirim);
+
+      send_data();
+
+      Serial.println("Sending Data...");
+      Serial.print("Status Air :  "); Serial.println(status_air);
+
+      char copy[20];
+      status_air.toCharArray(copy, 20);
+
+      tb.sendTelemetryString("air", copy);
+      tb.loop();
+    }
+
+    if (text == "/turbidity") {
+      kirim = "";
+
+      Serial.println();
+      bot.sendChatAction(chat_id, "typing");
+      turb_fnc();
+      delay(200);
+
+      kirim = "Tingkat kekeruhan kolam : ";
+      kirim += String(turbidity);
+      bot.sendMessage(chat_id, kirim);
+
+      send_data();
+
+      Serial.println("Sending Data...");
+      Serial.print("Kekeruhan Air :  "); Serial.println(turbidity);
+      tb.sendTelemetryFloat("kekeruhan", turbidity);
+      tb.loop();
+    }
+
+    if (text == "/show_all") {
+      kirim = "";
+      bot.sendChatAction(chat_id, "typing");
+      delay(200);
+      bot.sendMessage(chat_id, "Menampilkan semua status...");
+
+      turb_fnc();
+      status_air_fnc();
+      ultra_fnc();
+
+      Serial.println();
+      bot.sendChatAction(chat_id, "typing");
+      delay(200);
+
+      kirim = "Tingkat kekeruhan kolam : ";
+      kirim += String(turbidity);
+      kirim += "\n";
+      kirim += "Kondisi air kolam : ";
+      kirim += status_air;
+      kirim += "\n";
+      kirim += "Jarak dengan air : ";
+      kirim += String(jarak);
+      kirim += "\n";
+      kirim += "Kondisi kolam : ";
+      kirim += kondisi_kolam;
+      bot.sendMessage(chat_id, kirim);
+
+      char copy[20];
+      kondisi_kolam.toCharArray(copy, 20);
+
+      char copy2[20];
+      status_air.toCharArray(copy2, 20);
+
+      send_data();
+
+      Serial.println("Sending Data...");
+      Serial.print("Kekeruhan Air :  "); Serial.println(turbidity);
+      Serial.print("Status Air :  "); Serial.println(nilai_air);
+      Serial.print("Jarak Permukaan Air :  "); Serial.println(jarak);
+      Serial.print("Kondisi Kolam :  "); Serial.println(kondisi_kolam);
+      tb.sendTelemetryFloat("kekeruhan", turbidity);
+      tb.sendTelemetryString("air", copy2);
+      tb.sendTelemetryFloat("jarak", jarak);
+      tb.sendTelemetryString("kondisi_kolam", copy);
+
+      tb.loop();
+    }
+
+    if (text == "/beri_makan_ikan") {
+      kirim = "";
+
+      Serial.println();
+      bot.sendChatAction(chat_id, "typing");
+      myservo.write(180);
+      delay(1000);
+      myservo.write(0);
+      delay(200);
+
+      kirim = "Ikan sudah di beri makan";
+      bot.sendMessage(chat_id, kirim);
+    }
+
+    if (text == "/start") {
+      String welcome = "Hello, " + from_name + ".\n";
+      welcome += "Apakah ada yang bisa saya bantu?\n\n";
+      welcome += "Mohon klik /menu untuk menampilkan semua menu";
+      bot.sendMessage(chat_id, welcome);
+    }
+
+    if (text == "/menu") {
+      String menu = "Hello, " + from_name + ".\n";
+      menu += "Silakan memilih menu berikut : \n\n";
+      menu += "/jarak_air : Untuk mengetahui jarak air\n";
+      menu += "/turbidity : Untuk mengetahui kekeruhan air\n";
+      menu += "/status_air : Untuk mengetahui kondisi air kolam\n";
+      menu += "/show_all : Untuk mengetahui semua status\n";
+      menu += "/beri_makan_ikan : Untuk memberi makan ikan\n";
+      bot.sendMessage(chat_id, menu);
+    }
+  }
+}
+
+void handleNewMessages2(int numNewMessages) {
+  Serial.println("handleNewMessages");
+  Serial.println(String(numNewMessages));
+
+  for (int i = 0; i < numNewMessages; i++) {
+    String chat_id = String(bot.messages[i].chat_id);
+    String text = bot.messages[i].text;
+
+    String from_name = bot.messages[i].from_name;
+    if (from_name == "") from_name = "Guest";
+
+    if (text == "/ya") {
+      kirim = "";
+
+      Serial.println();
+      bot.sendChatAction(chat_id, "typing");
+      sole_tune();
+      Serial.println("Kolam Di Kuras");
+
+      delay(1000);
+
+      kirim = "";
+      kirim += "Kolam saat ini di kuras";
+      bot.sendMessage("696919753", kirim);
+
+      kondisi_kolam = "Kolam Di Kuras";
+
+      char copy[20];
+
+      kondisi_kolam.toCharArray(copy, 20);
+
+      send_data();
+      tb.sendTelemetryString("kondisi_kolam", copy);
+
+      while (analogRead(sens_air) > 1500) {
+        Serial.print(".");
+        sole_tune();
+        delay(1000);
+      }
+
+      logika_kolam;
+    }
+
+    if (text == "/tidak") {
+      telegram();
+    }
+  }
+}
+
+
+
+
+
+void setup() {
+  Serial.begin(115200);
+
+  //TURBIDITY
+  pinMode(turb, INPUT);
+
+  //AIR
+  pinMode(sens_air, INPUT);
+
+  //SERVO
+  pinMode(pot, INPUT);
+  myservo.attach(13);
+  myservo.write(0);
+
+  //OUTPUT
+  pinMode(sole, OUTPUT);
+  pinMode(pump, OUTPUT);
+
+  // Attempt to connect to Wifi network:
+  Serial.print("Connecting Wifi: ");
+  Serial.println(ssid);
+
+  // Set WiFi to station mode and disconnect from an AP if it was Previously
+  // connected
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void loop() {
+  delay(2000);
+
+  Serial.println();
+
+  turb_fnc();
+  status_air_fnc();
+  ultra_fnc();
+
+  Serial.println();
+
+  logika_kolam();
+}
